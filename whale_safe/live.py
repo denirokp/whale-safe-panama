@@ -44,17 +44,22 @@ def get_api_key() -> str | None:
     return key.strip() if key else None
 
 
-async def _pull(api_key: str, seconds: float, max_msgs: int) -> list[dict]:
+async def _pull(api_key: str, total_seconds: float, max_msgs: int) -> list[dict]:
     import websockets
 
     sub = _subscription(api_key)
     positions: list[dict] = []
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + total_seconds
     try:
         async with websockets.connect(config.AISSTREAM_URL, ping_interval=20) as ws:
             await ws.send(json.dumps(sub))
             while len(positions) < max_msgs:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break  # hard wall-clock cap reached
                 try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=seconds)
+                    raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
                 except asyncio.TimeoutError:
                     break
                 try:
@@ -77,15 +82,15 @@ async def _pull(api_key: str, seconds: float, max_msgs: int) -> list[dict]:
     return positions
 
 
-def fetch_live_snapshot(seconds: float = 40.0, max_msgs: int = 600) -> list[dict] | None:
+def fetch_live_snapshot(total_seconds: float = 12.0, max_msgs: int = 300) -> list[dict] | None:
     """Collect a short window of live AIS positions for the gulf.
 
-    Returns a list of position dicts, or None if no API key is configured.
-    An empty list means a key exists but no messages arrived in the window.
+    Bounded by a hard wall-clock cap (default 12s) so the first page load stays
+    snappy on Streamlit Cloud / Codespaces. Returns a list of position dicts, or
+    None if no API key is configured. An empty list means a key exists but no
+    messages arrived in the window.
     """
     api_key = get_api_key()
     if not api_key:
         return None
-    # `seconds` here bounds the idle gap between messages; the overall pull ends
-    # when max_msgs is reached or a `seconds`-long silence occurs.
-    return asyncio.run(_pull(api_key, seconds=seconds, max_msgs=max_msgs))
+    return asyncio.run(_pull(api_key, total_seconds=total_seconds, max_msgs=max_msgs))

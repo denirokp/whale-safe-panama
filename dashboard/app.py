@@ -110,35 +110,39 @@ def flag_label(mmsi: str) -> str:
     return f"{emoji} {country}"
 
 
-mode = load()
-with store.connect() as conn:
-    ov = analytics.overview(conn)
-    board = analytics.leaderboard(conn)
-    best = analytics.best_performers(conn)
-    pts = analytics.positions_for_map(conn)
-    hist = analytics.speed_histogram(conn)
-    flags = analytics.by_flag(conn)
-
-season_now = in_season(date.today())
-
 # --------------------------------------------------------------------------- #
-# Hero
+# Hero — painted FIRST so the page shows instantly while data loads below.
 # --------------------------------------------------------------------------- #
-badge = (
-    '<span class="badge badge-live">🟢 LIVE — real AIS ship data</span>'
-    if mode == "live"
-    else '<span class="badge badge-demo">🟡 DEMO — simulated data (no live feed connected)</span>'
-)
 st.markdown(
-    f"""
+    """
     <div class="hero">
       <h1>🐋 Whale Safe Panama</h1>
       <p>Endangered humpback whales cross one of the world's busiest shipping lanes here.
       Ships are asked to slow to <b>10 knots</b> in the Gulf of Panama so a collision
       doesn't kill a whale. <b>This dashboard shows who actually slows down — and who doesn't.</b></p>
-      {badge}
     </div>
     """,
+    unsafe_allow_html=True,
+)
+badge_slot = st.empty()
+
+# Now load data (may pull a brief live AIS snapshot — bounded to ~12s).
+with st.spinner("Loading ship data…"):
+    mode = load()
+    with store.connect() as conn:
+        ov = analytics.overview(conn)
+        board = analytics.leaderboard(conn)
+        best = analytics.best_performers(conn)
+        pts = analytics.positions_for_map(conn)
+        hist = analytics.speed_histogram(conn)
+        flags = analytics.by_flag(conn)
+
+season_now = in_season(date.today())
+
+badge_slot.markdown(
+    '<span class="badge badge-live">🟢 LIVE — real AIS ship data</span>'
+    if mode == "live"
+    else '<span class="badge badge-demo">🟡 DEMO — simulated data (no live feed connected)</span>',
     unsafe_allow_html=True,
 )
 
