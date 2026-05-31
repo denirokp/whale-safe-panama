@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 
 import altair as alt
 import pandas as pd
@@ -119,6 +119,17 @@ def load_gfw() -> dict | None:
         return None
 
 
+@st.cache_data(ttl=21600, show_spinner=False)
+def load_gfw_recent() -> dict | None:
+    """Most recent ~30 days of corridor speeds (GFW lags ~3 days). Auto-rolls."""
+    end = date.today() - timedelta(days=3)        # lag buffer
+    start = end - timedelta(days=30)
+    try:
+        return gfw.over_pct(date_range=(start.isoformat(), end.isoformat()))
+    except Exception:
+        return None
+
+
 # --------------------------------------------------------------------------- #
 # Hero — painted FIRST so the page shows instantly while data loads below.
 # --------------------------------------------------------------------------- #
@@ -191,6 +202,25 @@ if gfw_data and gfw_data.get("total_hours"):
     rc1.metric("Time over the limit", f"{over_pct:.0f}%", help="Share of commercial-vessel presence-hours above 10 kn.")
     rc2.metric("Time whale-safe", f"{comp_pct:.0f}%")
     rc3.metric("Vessel-hours measured", f"{gfw_data['total_hours']:,.0f}")
+
+    # Recent rolling window vs the protected season — does the rule change behaviour?
+    recent = load_gfw_recent()
+    if recent and recent.get("over_pct") is not None and gfw_data.get("over_pct") is not None:
+        r_over = recent["over_pct"]
+        s_over = gfw_data["over_pct"]
+        end_str = recent["date_range"][1]
+        if season_now:
+            st.success(
+                f"🟢 **In season right now.** Last 30 days (through {end_str}): "
+                f"**{r_over:.0f}%** of commercial-vessel time was over 10 kn."
+            )
+        else:
+            st.warning(
+                f"🔴 **Rule is off-season right now.** In the last 30 days (through {end_str}), "
+                f"**{r_over:.0f}%** of commercial-vessel time in the corridor was over 10 kn — "
+                f"vs **{s_over:.0f}%** during the protected 2025 season. "
+                f"When the seasonal limit is active, ships visibly slow down."
+            )
 
     rg1, rg2 = st.columns(2)
     with rg1:

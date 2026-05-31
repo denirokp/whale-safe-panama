@@ -162,6 +162,47 @@ def season_report(
     }
 
 
+def _bucket_hours(token: str, date_range: str, buckets: list[str]) -> float:
+    """Total commercial-vessel presence-hours for a set of speed buckets (one request)."""
+    speeds = ", ".join(f'"{b}"' for b in buckets)
+    params = {
+        "datasets[0]": PRESENCE_DATASET, "date-range": date_range,
+        "temporal-resolution": "ENTIRE", "spatial-resolution": "LOW",
+        "group-by": "FLAG", "format": "JSON",
+        "filters[0]": f"speed in ({speeds})", "filters[1]": _type_filter(),
+    }
+    resp = requests.post(
+        API_URL, params=params, json={"geojson": _polygon_geojson()},
+        headers={"Authorization": f"Bearer {token}"}, timeout=90,
+    )
+    resp.raise_for_status()
+    entries = resp.json().get("entries") or []
+    if not entries or not entries[0]:
+        return 0.0
+    rows = entries[0][next(iter(entries[0].keys()))] or []
+    return sum(float(r.get("hours") or 0) for r in rows)
+
+
+def over_pct(
+    date_range: tuple[str, str],
+    token: str | None = None,
+) -> dict | None:
+    """Lightweight (2-request) over-limit share for a date range — for the 'recent' view."""
+    token = token or get_token()
+    if not token:
+        return None
+    dr = f"{date_range[0]},{date_range[1]}"
+    over = _bucket_hours(token, dr, OVER_LIMIT_BUCKETS)
+    compliant = _bucket_hours(token, dr, ["<2", "2-4", "4-6", "6-10"])
+    total = over + compliant
+    return {
+        "date_range": date_range,
+        "over_hours": round(over, 1),
+        "total_hours": round(total, 1),
+        "over_pct": round(100 * over / total, 1) if total else None,
+    }
+
+
 def probe(date_range: tuple[str, str] = DEFAULT_SEASON) -> None:
     """CLI smoke test against a real token."""
     token = get_token()
