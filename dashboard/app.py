@@ -23,7 +23,7 @@ import streamlit as st
 # Allow running from repo root without installing the package.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from whale_safe import analytics, config, live, simulate, store  # noqa: E402
+from whale_safe import analytics, config, gfw, live, simulate, store  # noqa: E402
 from whale_safe.geo import in_season  # noqa: E402
 
 st.set_page_config(page_title="Whale Safe Panama", page_icon="🐋", layout="wide")
@@ -110,6 +110,15 @@ def flag_label(mmsi: str) -> str:
     return f"{emoji} {country}"
 
 
+@st.cache_data(ttl=21600, show_spinner="Loading real season data (Global Fishing Watch)…")
+def load_gfw() -> dict | None:
+    """Real corridor compliance from GFW satellite AIS (historical; cached 6h)."""
+    try:
+        return gfw.season_report()
+    except Exception:
+        return None
+
+
 # --------------------------------------------------------------------------- #
 # Hero — painted FIRST so the page shows instantly while data loads below.
 # --------------------------------------------------------------------------- #
@@ -160,6 +169,75 @@ st.markdown(
     '<b>~10–19%</b> actually respect the speed limit.</p>',
     unsafe_allow_html=True,
 )
+
+# --------------------------------------------------------------------------- #
+# REAL DATA — Global Fishing Watch (satellite AIS), last humpback season
+# --------------------------------------------------------------------------- #
+gfw_data = load_gfw()
+if gfw_data and gfw_data.get("total_hours"):
+    y0 = gfw_data["date_range"][0][:4]
+    over_pct = gfw_data["over_pct"]
+    comp_pct = gfw_data["compliant_pct"]
+    st.markdown(
+        f'<div class="hero" style="background:linear-gradient(135deg,#0a2e2a 0%,#0d4f43 60%,#16857a 100%);">'
+        f'<h1 style="font-size:1.5rem;">🛰️ Real data — humpback season {y0}</h1>'
+        f'<p>From <b>satellite AIS</b> (Global Fishing Watch), not a simulation. Of all the time '
+        f'cargo, tanker &amp; carrier ships spent in the whale corridor during the {y0} season '
+        f'(1 Aug – 30 Nov), <b>{over_pct:.0f}% was spent speeding over 10 knots</b>.</p>'
+        f'<span class="badge badge-live">🛰️ REAL — satellite AIS · season {y0}</span></div>',
+        unsafe_allow_html=True,
+    )
+    rc1, rc2, rc3 = st.columns(3)
+    rc1.metric("Time over the limit", f"{over_pct:.0f}%", help="Share of commercial-vessel presence-hours above 10 kn.")
+    rc2.metric("Time whale-safe", f"{comp_pct:.0f}%")
+    rc3.metric("Vessel-hours measured", f"{gfw_data['total_hours']:,.0f}")
+
+    rg1, rg2 = st.columns(2)
+    with rg1:
+        st.markdown("**Real speed distribution (vessel-hours)**")
+        dist = gfw_data["distribution"]
+        ddf = pd.DataFrame(
+            {"speed": list(dist.keys()), "hours": list(dist.values())}
+        )
+        ddf["over_limit"] = ddf["speed"].isin(gfw.OVER_LIMIT_BUCKETS)
+        chart = (
+            alt.Chart(ddf).mark_bar().encode(
+                x=alt.X("speed:N", sort=gfw.SPEED_BUCKETS, title="Speed (knots)"),
+                y=alt.Y("hours:Q", title="Vessel-hours"),
+                color=alt.Color("over_limit:N",
+                                scale=alt.Scale(domain=[False, True], range=["#18a558", "#d62828"]),
+                                legend=None),
+                tooltip=["speed", "hours"],
+            ).properties(height=280)
+        )
+        st.altair_chart(chart, use_container_width=True)
+    with rg2:
+        st.markdown("**Which flags speed the most? (real)**")
+        fdf = pd.DataFrame(gfw_data["by_flag"][:10])
+        if len(fdf):
+            fdf["Flag"] = fdf["flag"].map(analytics.iso3_to_flag)
+            fdf = fdf.rename(columns={"over_hours": "Hours over limit", "over_pct": "% of its time over"})
+            st.dataframe(
+                fdf[["Flag", "Hours over limit", "% of its time over"]],
+                hide_index=True, use_container_width=True, height=280,
+                column_config={
+                    "% of its time over": st.column_config.ProgressColumn(
+                        "% of its time over", min_value=0, max_value=100, format="%.0f%%"),
+                },
+            )
+    st.caption(
+        "📐 Honest caveat: this counts **presence-hours**, so slow/anchored ships near the canal "
+        "approach pull compliance up — it reads more optimistically than per-transit studies "
+        "(Guzman et al.: only ~10–19% of ships kept ≤10 kn the whole way). Source: Global Fishing "
+        "Watch AIS vessel presence (satellite), commercial vessels, corridor polygon north of 8°N."
+    )
+    st.divider()
+    st.subheader("🧪 Illustrative live/demo view")
+    st.caption(
+        "The boards below show the *mechanism* with named vessels. Live AIS (aisstream.io) has no "
+        "offshore coverage of this corridor, so this view is a **labelled simulation** unless a live "
+        "feed reaches the area. The real numbers are the satellite figures above."
+    )
 
 # --------------------------------------------------------------------------- #
 # Headline cards

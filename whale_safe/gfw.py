@@ -1,23 +1,27 @@
-"""Global Fishing Watch (GFW) — real satellite-AIS compliance stats for the corridor.
+"""Global Fishing Watch (GFW) — real satellite-AIS compliance for the corridor.
 
-aisstream.io has no offshore coverage of the Gulf-of-Panama TSS corridor (terrestrial
-receivers don't reach it). GFW combines satellite AIS, so it DOES cover the corridor and
-includes cargo / tanker / carrier vessels — exactly the ships that strike whales.
+aisstream.io has no offshore coverage of the Gulf-of-Panama TSS corridor. GFW combines
+satellite AIS and covers it, including cargo/tanker/carrier vessels — the ships that
+strike whales. GFW's public v3 API has no raw per-vessel track endpoint, but the 4Wings
+report (dataset `public-global-presence`) aggregates vessel-presence over a polygon and
+date range, filterable by vessel type AND speed bucket. That yields the project's
+headline on REAL data: the share of commercial-vessel time in the corridor spent over
+the 10-knot whale limit during a season.
 
-GFW's public v3 API has NO raw per-vessel track endpoint, but its **4Wings report**
-(dataset `public-global-presence`) returns vessel-presence aggregated over a polygon and
-date range, filterable by vessel type AND speed bucket. That gives the headline the whole
-project is about: the REAL share of cargo/tanker traffic in the corridor that exceeded the
-10-knot whale limit during a season — from satellite data, not an estimate.
+Verified against the live API (2026-05-31). Key request facts learned the hard way:
+- Must use POST with the polygon in the body as `geojson`.
+- Filters ONLY apply when `group-by` is set (else the report returns an unfiltered
+  per-vessel list). We use `group-by=FLAG` so filters apply AND we get a per-flag split.
+- `in (...)` filter values need DOUBLE quotes: vessel_type in ("cargo"), speed in ("10-15").
+- The aggregated value is in the `hours` field (vessel-presence hours), not `value`.
+- `spatial-resolution` (HIGH/LOW) is required.
 
-What this gives:  real compliance %, real speed distribution, by vessel type.
-What it can't:    named individual vessels / a "top speeders" leaderboard, real-time.
+Metric note (surfaced in the UI): this is presence-HOURS weighted. Slow/anchored vessels
+near the canal approach linger and inflate the compliant bucket, so this reads more
+optimistically than per-transit compliance studies (Guzman et al.: only ~10-19% of ships
+kept <=10 kn). Both are honest; they measure different things.
 
-Free token (non-commercial): https://globalfishingwatch.org/our-apis/
-Set it as GFW_API_TOKEN (Streamlit secrets / env / .env).
-
-NOTE: response shape and filter syntax below follow the documented API; they are tuned
-against a real token in gfw.probe(). Until verified, treat parsing as best-effort.
+Free token (non-commercial): https://globalfishingwatch.org/our-apis/  (env GFW_API_TOKEN)
 """
 
 from __future__ import annotations
@@ -31,11 +35,8 @@ from . import config
 API_URL = "https://gateway.api.globalfishingwatch.org/v3/4wings/report"
 PRESENCE_DATASET = "public-global-presence:latest"
 
-# Speed buckets as defined by the 4Wings presence dataset (knots).
 SPEED_BUCKETS = ["<2", "2-4", "4-6", "6-10", "10-15", "15-25", ">25"]
-# Buckets that count as OVER the 10-knot limit.
 OVER_LIMIT_BUCKETS = ["10-15", "15-25", ">25"]
-# Vessel types relevant to whale strikes (large commercial traffic).
 SHIP_TYPES = ["cargo", "bunker_or_tanker", "carrier", "passenger"]
 
 # Last completed humpback season before today (2026-05-31): 1 Aug - 30 Nov 2025.
@@ -66,115 +67,115 @@ def get_token() -> str | None:
 
 
 def _polygon_geojson() -> dict:
-    """Our exact TSS corridor polygon as a GeoJSON Polygon ([lon, lat] rings)."""
+    """Our exact TSS corridor polygon as GeoJSON ([lon, lat] ring)."""
     ring = [[lon, lat] for (lat, lon) in config.SPEED_ZONE_POLYGON]
     ring.append(ring[0])
     return {"type": "Polygon", "coordinates": [ring]}
 
 
-def _report_value(token: str, *, date_range: str, filters: list[str], timeout: int = 60) -> float:
-    """Run one 4Wings presence report over the corridor; return total presence value.
+def _type_filter() -> str:
+    return 'vessel_type in (' + ", ".join(f'"{t}"' for t in SHIP_TYPES) + ')'
 
-    Presence is aggregated vessel-hours (the API's report value) for the given filters.
+
+def _report_rows(token: str, date_range: str, speed_bucket: str, timeout: int = 90) -> list[dict]:
+    """One 4Wings presence report for a speed bucket, grouped by flag.
+
+    Returns a list of {flag, hours, vesselIDs, ...} rows (commercial vessels only).
     """
     params = {
         "datasets[0]": PRESENCE_DATASET,
         "date-range": date_range,
         "temporal-resolution": "ENTIRE",
+        "spatial-resolution": "LOW",
+        "group-by": "FLAG",
         "format": "JSON",
+        "filters[0]": f'speed in ("{speed_bucket}")',
+        "filters[1]": _type_filter(),
     }
-    for i, f in enumerate(filters):
-        params[f"filters[{i}]"] = f
-    body = {"geojson": _polygon_geojson()}
     resp = requests.post(
-        API_URL, params=params, json=body,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        timeout=timeout,
+        API_URL, params=params, json={"geojson": _polygon_geojson()},
+        headers={"Authorization": f"Bearer {token}"}, timeout=timeout,
     )
     resp.raise_for_status()
-    return _sum_report(resp.json())
+    data = resp.json()
+    entries = data.get("entries") or []
+    if not entries or not entries[0]:
+        return []
+    key = next(iter(entries[0].keys()))
+    return entries[0][key] or []
 
 
-def _sum_report(payload) -> float:
-    """Sum numeric 'value' fields from a 4Wings report response (shape-tolerant)."""
-    total = 0.0
-
-    def walk(node):
-        nonlocal total
-        if isinstance(node, dict):
-            for k, v in node.items():
-                if k == "value" and isinstance(v, (int, float)):
-                    total += float(v)
-                else:
-                    walk(v)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    walk(payload)
-    return total
-
-
-def _type_filter() -> str:
-    quoted = ", ".join(f"'{t}'" for t in SHIP_TYPES)
-    return f"vessel_type in ({quoted})"
-
-
-def season_compliance(
+def season_report(
     token: str | None = None,
     date_range: tuple[str, str] = DEFAULT_SEASON,
 ) -> dict | None:
-    """Real corridor compliance for a season, from GFW satellite-AIS presence.
+    """Real corridor compliance for commercial vessels over a season (GFW satellite AIS).
 
-    Returns a dict with the full speed distribution, total presence, over-limit
-    presence and the compliance percentage — or None if no token.
+    Returns a dict with the speed distribution (hours per bucket), totals, compliance %,
+    and a per-flag breakdown (hours over vs total -> over %). None if no token.
     """
     token = token or get_token()
     if not token:
         return None
     dr = f"{date_range[0]},{date_range[1]}"
-    type_f = _type_filter()
+
     distribution: dict[str, float] = {}
+    flag_total: dict[str, float] = {}
+    flag_over: dict[str, float] = {}
     for bucket in SPEED_BUCKETS:
-        distribution[bucket] = _report_value(
-            token, date_range=dr, filters=[type_f, f"speed = '{bucket}'"]
-        )
+        rows = _report_rows(token, dr, bucket)
+        bucket_hours = 0.0
+        for row in rows:
+            hrs = float(row.get("hours") or 0)
+            flag = row.get("flag") or "UNK"
+            bucket_hours += hrs
+            flag_total[flag] = flag_total.get(flag, 0.0) + hrs
+            if bucket in OVER_LIMIT_BUCKETS:
+                flag_over[flag] = flag_over.get(flag, 0.0) + hrs
+        distribution[bucket] = bucket_hours
+
     total = sum(distribution.values())
     over = sum(distribution[b] for b in OVER_LIMIT_BUCKETS)
     compliant_pct = round(100 * (total - over) / total, 1) if total > 0 else None
+
+    flags = []
+    for flag, tot in flag_total.items():
+        ov = flag_over.get(flag, 0.0)
+        flags.append({
+            "flag": flag,
+            "hours": round(tot, 1),
+            "over_hours": round(ov, 1),
+            "over_pct": round(100 * ov / tot, 0) if tot > 0 else 0,
+        })
+    flags.sort(key=lambda f: f["over_hours"], reverse=True)
+
     return {
         "date_range": date_range,
         "distribution": distribution,
-        "total_presence": total,
-        "over_limit_presence": over,
+        "total_hours": round(total, 1),
+        "over_hours": round(over, 1),
         "compliant_pct": compliant_pct,
+        "over_pct": round(100 * over / total, 1) if total else None,
+        "by_flag": flags,
         "ship_types": SHIP_TYPES,
         "source": "Global Fishing Watch — AIS vessel presence (satellite)",
     }
 
 
 def probe(date_range: tuple[str, str] = DEFAULT_SEASON) -> None:
-    """CLI smoke test against a real token — prints the raw shape + computed compliance."""
+    """CLI smoke test against a real token."""
     token = get_token()
     if not token:
-        raise SystemExit("GFW_API_TOKEN not set. Get a free token: https://globalfishingwatch.org/our-apis/")
-    dr = f"{date_range[0]},{date_range[1]}"
-    print(f"Probing GFW 4Wings presence over the corridor, {dr} ...")
-    # Raw single request to inspect response shape.
-    params = {
-        "datasets[0]": PRESENCE_DATASET, "date-range": dr,
-        "temporal-resolution": "ENTIRE", "format": "JSON",
-        "filters[0]": _type_filter(),
-    }
-    r = requests.post(
-        API_URL, params=params, json={"geojson": _polygon_geojson()},
-        headers={"Authorization": f"Bearer {token}"}, timeout=60,
-    )
-    print("HTTP", r.status_code)
-    print("Body (first 800 chars):", str(r.text)[:800])
-    if r.ok:
-        result = season_compliance(token, date_range)
-        print("\nComputed:", result)
+        raise SystemExit("GFW_API_TOKEN not set: https://globalfishingwatch.org/our-apis/")
+    print(f"GFW corridor presence, season {date_range[0]}..{date_range[1]} (commercial vessels):")
+    res = season_report(token, date_range)
+    for b, h in res["distribution"].items():
+        print(f"  {b:>6}: {h:>8.0f} h")
+    print(f"\n  compliant <=10 kn : {res['compliant_pct']}%")
+    print(f"  over 10 kn        : {res['over_pct']}%  ({res['over_hours']:.0f} of {res['total_hours']:.0f} h)")
+    print("  top flags by over-limit hours:")
+    for f in res["by_flag"][:6]:
+        print(f"    {f['flag']:4} {f['over_hours']:>6.0f}h over / {f['hours']:>6.0f}h  ({f['over_pct']:.0f}% over)")
 
 
 if __name__ == "__main__":

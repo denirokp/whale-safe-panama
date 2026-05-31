@@ -34,6 +34,28 @@ _MID_FLAGS = {
 }
 
 
+# ISO-3 (GFW flag codes) -> ISO-2, for emoji rendering.
+_ISO3_TO_ISO2 = {
+    "PAN": "PA", "LBR": "LR", "MHL": "MH", "SGP": "SG", "MLT": "MT", "BHS": "BS",
+    "HKG": "HK", "GRC": "GR", "CYP": "CY", "CHN": "CN", "JPN": "JP", "KOR": "KR",
+    "NOR": "NO", "DNK": "DK", "DEU": "DE", "USA": "US", "GBR": "GB", "ITA": "IT",
+    "NLD": "NL", "PRT": "PT", "ESP": "ES", "FRA": "FR", "RUS": "RU", "IND": "IN",
+    "TUR": "TR", "BEL": "BE", "ATG": "AG", "VCT": "VC", "KNA": "KN", "BRB": "BB",
+    "BMU": "BM", "CYM": "KY", "TWN": "TW", "THA": "TH", "IDN": "ID", "MYS": "MY",
+    "PHL": "PH", "VNM": "VN", "BRA": "BR", "CHL": "CL", "ECU": "EC", "COL": "CO",
+    "MEX": "MX", "PER": "PE", "SAU": "SA", "ARE": "AE", "EGY": "EG",
+}
+
+
+def iso3_to_flag(code: str) -> str:
+    """ISO-3 country code (GFW flag) -> 'emoji ISO3', e.g. 'LBR' -> '🇱🇷 LBR'."""
+    iso2 = _ISO3_TO_ISO2.get((code or "").upper())
+    if not iso2:
+        return f"🏳️ {code or 'UNK'}"
+    emoji = "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in iso2)
+    return f"{emoji} {code.upper()}"
+
+
 def mmsi_to_flag(mmsi: str) -> tuple[str, str]:
     """Return (country, emoji) for an MMSI; ('Unknown', '🏳️') if unmatched."""
     try:
