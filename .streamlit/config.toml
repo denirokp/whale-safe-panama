@@ -1,0 +1,15 @@
+# Ocean theme. Committed to the repo so Streamlit Community Cloud picks it up.
+# Secrets (the AIS key) live in .streamlit/secrets.toml, which is git-ignored.
+[theme]
+base = "light"
+primaryColor = "#13728a"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f3f8fb"
+textColor = "#0b2a3a"
+font = "sans serif"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
